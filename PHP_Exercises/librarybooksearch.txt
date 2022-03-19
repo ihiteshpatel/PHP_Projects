@@ -1,0 +1,586 @@
+<?php
+/**
+ * Library Book Search.
+ *
+ * @package     WordPress_Library_Book_Search
+ * @author      MultiDots
+ * @copyright   2021 Multidots
+ * @license     GPL-2.0+
+ *
+ * @wordpress-plugin
+ * Plugin Name: Library Book Search
+ * Plugin URI:
+ * Description: Plugin is based on library book search which will be based on name, author, publisher, price & rating.
+ * Version: 1.0
+ * Author: MultiDots
+ * Author URI:
+ * Text Domain: lbsp
+ * License: GPL2
+ */
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit; // Exit if accessed directly.
+} else {
+	clearstatcache();
+}
+
+if ( ! defined( 'LBSP_PLUGIN_DIR' ) ) {
+	/**
+	 * Define Plugin Dir path.
+	 */
+	define( 'LBSP_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
+}
+
+if ( ! defined( 'LBSP_PLUGIN_URL' ) ) {
+	/**
+	 * Define Plugin URL.
+	 */
+	define( 'LBSP_PLUGIN_URL', plugins_url( '/', __FILE__ ) );
+}
+
+require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+
+/*
+* enqueue styles and scripts required in frontend.
+*/
+add_action( 'wp_enqueue_scripts', 'md_front_scripts' );
+
+if ( ! function_exists( 'md_front_scripts' ) ) {
+	/**
+	 * Enqueue style and scripts for frontend.
+	 */
+	function md_front_scripts() {
+		wp_enqueue_script( 'book_search', LBSP_PLUGIN_URL . 'assets/scripts/script.js', array( 'jquery' ), '1.0', true );
+		wp_localize_script( 'book_search', 'ajax_url', (array) admin_url( 'admin-ajax.php' ) );
+		// enqueue style.css in front.
+		wp_enqueue_style( 'books-library-style-css', plugins_url( '/assets/css/style.css', __FILE__ ), array(), '1.0' );
+	}
+}
+
+add_action( 'admin_enqueue_scripts', 'my_admin_style' );
+
+/**
+ * Enqueue Scripts and Styles for backend.
+ */
+function my_admin_style() {
+	// enqueue style.css in backend.
+	wp_enqueue_style( 'books-library-style-css', plugins_url( '/assets/css/admin-style.css', __FILE__ ), array(), '1.0' );
+}
+
+/*
+* Create books custom post_type.
+*/
+if ( ! function_exists( 'md_reg_pt' ) ) {
+	/**
+	 * Register Post Type
+	 */
+	function md_reg_pt() {
+		$labels    = array(
+			'name'               => esc_html__( 'Books', 'lbsp' ),
+			'singular_name'      => esc_html__( 'Book', 'lbsp' ),
+			'menu_name'          => esc_html__( 'Books', 'lbsp' ),
+			'all_items'          => esc_html__( 'All Books', 'lbsp' ),
+			'view_item'          => esc_html__( 'View Book', 'lbsp' ),
+			'add_new_item'       => esc_html__( 'Add New Book', 'lbsp' ),
+			'add_new'            => esc_html__( 'Add New', 'lbsp' ),
+			'edit_item'          => esc_html__( 'Edit Book', 'lbsp' ),
+			'update_item'        => esc_html__( 'Update Book', 'lbsp' ),
+			'search_items'       => esc_html__( 'Search Book', 'lbsp' ),
+			'not_found'          => esc_html__( 'Book Not Found', 'lbsp' ),
+			'not_found_in_trash' => esc_html__( 'Not found in Trash', 'lbsp' ),
+		);
+		$arguments = array(
+			'label'               => esc_html__( 'books', 'lbsp' ),
+			'description'         => esc_html__( 'Book Selection', 'lbsp' ),
+			'labels'              => $labels,
+			'supports'            => array( 'title', 'editor', 'thumbnail', 'revisions' ),
+			'public'              => true,
+			'hierarchical'        => false,
+			'menu_icon'           => 'dashicons-book-alt',
+			'show_ui'             => true,
+			'has_archive'         => true,
+			'can_export'          => true,
+			'exclude_from_search' => false,
+			'publicly_queryable'  => true,
+			'capability_type'     => 'page',
+		);
+
+		register_post_type( 'books', $arguments );
+
+		register_taxonomy(
+			'book_author',
+			'books',
+			array(
+				'labels'        => array(
+					'name'          => esc_html__( 'Author', 'lbsp' ),
+					'add_new_item'  => esc_html__( 'Add New Author', 'lbsp' ),
+					'new_item_name' => esc_html__( 'New Author Type', 'lbsp' ),
+				),
+				'show_ui'       => true,
+				'show_tagcloud' => false,
+				'hierarchical'  => true,
+			)
+		);
+
+		register_taxonomy(
+			'book_publisher',
+			'books',
+			array(
+				'labels'        => array(
+					'name'          => esc_html__( 'Publisher', 'lbsp' ),
+					'add_new_item'  => esc_html__( 'Add New Publisher', 'lbsp' ),
+					'new_item_name' => esc_html__( 'New Publisher Type', 'lbsp' ),
+				),
+				'show_ui'       => true,
+				'show_tagcloud' => false,
+				'hierarchical'  => true,
+			)
+		);
+	}
+}
+add_action( 'init', 'md_reg_pt', 0 );
+
+add_shortcode( 'book_search', 'lib_book_search_shortcode' );
+if ( ! function_exists( 'lib_book_search_shortcode' ) ) {
+	/**
+	 * Shortcode Function for Book Search and Listing.
+	 *
+	 * @param array $atts | Attribute shortcode.
+	 *
+	 * @return false|string|void
+	 */
+	function lib_book_search_shortcode( $atts ) {
+		$number = 10;
+		shortcode_atts(
+			array(
+				'number' => '10',
+			),
+			$atts
+		);
+
+		$number = sanitize_text_field( $number );
+
+		// We're outputting a lot of HTML, and the easiest way.
+		// to do it is with output buffering from PHP.
+		ob_start();
+
+		$books_lists = '';
+		$page        = 1;
+		$total_pages = 1;
+		// Get the Search Term.
+		$search = ( isset( $_GET['as'] ) ) ? sanitize_text_field( wp_unslash( $_GET['as'] ) ) : false;
+
+		// Get Query Var for pagination. This already exists in WordPress.
+		$page = ( get_query_var( 'paged' ) ) ? get_query_var( 'paged' ) : 1;
+
+		// Calculate the offset (i.e. how many posts we should skip).
+		$offset = ( $page - 1 ) * $number;
+
+		if ( isset( $_GET['book_search_nonce_field'] ) && wp_verify_nonce( sanitize_text_field( wp_unslash( $_GET['book_search_nonce_field'] ) ), 'book_search_nonce' ) && isset( $search ) && ! empty( $search ) ) {
+			// get your custom posts ids as an array.
+			$all_books = get_posts(
+				array(
+					'post_type'   => 'books',
+					'post_status' => 'publish',
+					'search'      => '*' . $search . '*',
+				)
+			);
+		} else {
+			// get your custom posts ids as an array.
+			$all_books = get_posts(
+				array(
+					'post_type'      => 'books',
+					'post_status'    => 'publish',
+					'posts_per_page' => $number,
+					'offset'         => $offset,
+				)
+			);
+		}
+		$total_posts = count( $all_books );
+
+		// Calculate the total number of pages for the pagination.
+		$total_pages = intval( $total_posts / $number ) + 1;
+
+		// Generate book author dropdown.
+		$book_author_taxonomies = get_categories( 'taxonomy=book_author' );
+
+		// Generate book publisher dropdown.
+		$book_publisher_taxonomies = get_categories( 'taxonomy=book_publisher' );
+		?>
+		<div id="book-search">
+			<form action="" method="get">
+				<?php wp_nonce_field( 'book_search_nonce', 'book_search_nonce_field' ); ?>
+				<div class="column-wrap">
+					<div class="column">
+						<label for="bookname"><?php echo esc_html__( 'Book Name', 'lbsp' ); ?></label>
+						<input type="text" name="bookname" id="bookname">
+					</div>
+					<div class="column">
+						<label for="author"><?php echo esc_html__( 'Author Name', 'lbsp' ); ?></label>
+						<select name="author" id="author">
+							<option value=''><?php echo esc_html__( 'Select Author', 'lbsp' ); ?></option>
+							<?php
+							foreach ( $book_author_taxonomies as $book_author ) {
+								if ( $book_author->count > 0 ) {
+									?>
+									<option value='<?php echo esc_html( $book_author->slug ); ?>'><?php echo esc_html( $book_author->name ); ?></option>
+									<?php
+								}
+							}
+							?>
+							</select>
+					</div>
+				</div>
+				<div class="column-wrap">
+					<div class="column">
+						<label for="publisher"><?php echo esc_html__( 'Publisher Name', 'lbsp' ); ?></label>
+						<select name="publisher" id="publisher">
+							<option value=''>
+								<?php echo esc_html__( 'Select Publisher', 'lbsp' ); ?>
+							</option>
+							<?php
+							foreach ( $book_publisher_taxonomies as $book_publisher ) {
+								if ( $book_publisher->count > 0 ) {
+									$book_pub_slug = $book_publisher->slug;
+									$book_pub_name = $book_publisher->name;
+									?>
+								<option value='<?php echo esc_html( $book_pub_slug ); ?>'><?php echo esc_html( $book_pub_name ); ?></option>
+									<?php
+								}
+							}
+							?>
+							</select>
+					</div>
+					<div class="column">
+						<label for="rating"><?php echo esc_html__( 'Rating', 'lbsp' ); ?></label>
+						<select name="rating" id="rating">
+							<option value=""><?php echo esc_html__( 'Any Rating', 'lbsp' ); ?></option>
+							<option value="5"><?php echo esc_html__( 'At Least 5', 'lbsp' ); ?></option>
+							<option value="4"><?php echo esc_html__( 'At Least 4', 'lbsp' ); ?></option>
+							<option value="3"><?php echo esc_html__( 'At Least 3', 'lbsp' ); ?></option>
+							<option value="2"><?php echo esc_html__( 'At Least 2', 'lbsp' ); ?></option>
+							<option value="1"><?php echo esc_html__( 'At Least 1', 'lbsp' ); ?></option>
+						</select>
+					</div>
+					<div class="column">
+						<label for="books_price" class="assistive-text full-width">Price</label>
+						<output>0</output>
+						<input type="range" id="price" value="100" min="1" max="3000" name="books_price" oninput="this.nextElementSibling.value = this.value">
+						<output>100</output>
+					</div>
+				</div>
+				<input type="submit" id="submit" name="submit" value="Search">
+			</form>
+
+			<ul class="responsive-table">
+				<li class="table-header">
+					<div class="col col-1"><?php echo esc_html__( 'No', 'lbsp' ); ?></div>
+					<div class="col col-2"><?php echo esc_html__( 'Book name', 'lbsp' ); ?></div>
+					<div class="col col-3"><?php echo esc_html__( 'Price', 'lbsp' ); ?></div>
+					<div class="col col-4"><?php echo esc_html__( 'Author', 'lbsp' ); ?></div>
+					<div class="col col-5"><?php echo esc_html__( 'Publisher', 'lbsp' ); ?></div>
+					<div class="col col-6"><?php echo esc_html__( 'Rating', 'lbsp' ); ?></div>
+				</li>
+			<?php
+			if ( is_array( $all_books ) && count( $all_books ) > 0 ) {
+				$key = 1;
+				foreach ( $all_books as $book ) {
+					$books_arr = $book->to_array();
+
+					// get the meta you need form each post.
+					$books_rating = get_post_meta( $book->ID, 'books_rating', true );
+					$books_price  = get_post_meta( $book->ID, 'books_price', true );
+
+					$permalink = get_permalink( $book->ID );
+
+					$book_author_term    = get_the_terms( $book->ID, 'book_author' );
+					$book_publisher_term = get_the_terms( $book->ID, 'book_publisher' );
+
+					if ( ! empty( $book_author_term ) && is_array( $book_author_term ) ) {
+						$books_arr['author_term'] = current( $book_author_term )->to_array();
+						$books_arr['author_term'] = $books_arr['author_term']['name'];
+					}
+					if ( ! empty( $book_publisher_term ) && is_array( $book_publisher_term ) ) {
+						$books_arr['publisher_term'] = current( $book_publisher_term )->to_array();
+						$books_arr['publisher_term'] = $books_arr['publisher_term']['name'];
+					}
+					if ( isset( $books_rating ) ) {
+						$books_arr['books_rating'] = $books_rating;
+					}
+					if ( isset( $books_price ) ) {
+						$books_arr['books_price'] = $books_price;
+					}
+					$rating_arr = array(
+						'rating' => $books_arr['books_rating'],
+						'type'   => 'rating',
+					);
+					?>
+					<li class="table-row">
+						<div class="col col-1" data-label="No"><?php echo esc_html( $key ); ?></div>
+						<div class="col col-2" data-label="Book Name">
+							<a title="<?php echo esc_html( $books_arr['post_title'] ); ?>" href="<?php echo esc_url( $permalink ); ?>"><?php echo esc_html( $books_arr['post_title'] ); ?></a>
+						</div>
+						<div class="col col-3" data-label="Price"><?php echo esc_html( $books_arr['books_price'] ); ?></div>
+						<div class="col col-4" data-label="Author"><?php echo esc_html( $books_arr['author_term'] ); ?></div>
+						<div class="col col-5" data-label="Publisher"><?php echo esc_html( $books_arr['publisher_term'] ); ?></div>
+						<div class="col col-6" data-label="Rating"><?php echo wp_kses_post( wp_star_ratings( $rating_arr ) ); ?></div>
+					</li>
+					<?php
+					$key ++;
+				}
+			} else {
+				?>
+				<h2><?php echo esc_html__( 'No books found', 'lbsp' ); ?></h2>';
+				<?php
+			}
+			?>
+			</ul>
+			<nav id="nav-single">
+				<h3 class="assistive-text"><?php esc_html_e( 'Pagination', 'lbsp' ); ?></h3>
+				<?php
+				echo esc_html( $page );
+				if ( 1 !== $page ) {
+					?>
+					<span class="nav-previous">
+<a rel="prev" href="<?php the_permalink(); ?>page/<?php echo esc_html( $page ) - 1; ?>/">
+<span class="meta-nav">←</span> <?php esc_html_e( 'Previous', 'lbsp' ); ?>
+</a>
+</span>
+				<?php } ?>
+
+				<?php if ( $page < $total_pages ) { ?>
+					<span class="nav-next">
+<a rel="next" href="<?php the_permalink(); ?>page/<?php echo esc_html( $page ) + 1; ?>/"><?php esc_html_e( 'Next', 'lbsp' ); ?>
+<span class="meta-nav">→</span>
+</a>
+</span>
+				<?php } ?>
+			</nav>
+		</div>
+
+		<?php
+		// Output the content.
+		$output = ob_get_contents();
+		ob_end_clean();
+
+		// Return only if we're inside a page. This won't list anything on a post or archive page.
+		if ( is_page() ) {
+			return $output;
+		}
+	}
+}
+
+/**
+ * Custom Meta box.
+ */
+if ( ! function_exists( 'book_reg_meta' ) ) {
+	/**
+	 * Register meta fields for the custom post type books.
+	 */
+	function book_reg_meta() {
+		add_meta_box( 'books_meta', esc_html__( 'Additional Details', 'lbsp' ), 'book_meta_callback', 'books' );
+	}
+}
+add_action( 'add_meta_boxes', 'book_reg_meta' );
+
+/**
+ * Meta box display callback.
+ */
+function book_meta_callback() {
+	include_once plugin_dir_path( __FILE__ ) . 'inc/books-meta.php';
+}
+
+add_action( 'save_post', 'book_save_meta' );
+if ( ! function_exists( 'book_save_meta' ) ) {
+	/**
+	 * Save Book Meta.
+	 *
+	 * @param int $post_id | Post Id.
+	 */
+	function book_save_meta( $post_id ) {
+		// books-meta-box-nonce.
+		$parent_id = wp_is_post_revision( $post_id );
+		if ( $parent_id ) {
+			$post_id = $parent_id;
+		}
+		$fields = array(
+			'books_rating',
+			'books_price',
+		);
+		if ( isset( $_POST['books-meta-box-nonce'] ) || wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['books-meta-box-nonce'] ) ), basename( __FILE__ ) ) ) {
+			foreach ( $fields as $field ) {
+				if ( array_key_exists( $field, $_POST ) ) {
+					update_post_meta( $post_id, $field, sanitize_text_field( wp_unslash( $_POST[ $field ] ) ) );
+				}
+			}
+		}
+	}
+}
+
+// Ajax Callback.
+add_action( 'wp_ajax_book_search', 'lib_book_search_callback' );
+add_action( 'wp_ajax_nopriv_book_search', 'lib_book_search_callback' );
+
+/**
+ * Book Search Ajax Callback.
+ */
+function lib_book_search_callback() {
+	header( 'Content-Type: application/json' );
+
+	$meta_query = array( 'relation' => 'AND' );
+
+	if ( ! empty( $_GET['book_search_nonce_field'] ) && wp_verify_nonce( sanitize_text_field( wp_unslash( $_GET['book_search_nonce_field'] ) ), 'book_search_nonce' ) ) {
+
+		if ( isset( $_GET['price'] ) ) {
+			$price        = sanitize_text_field( wp_unslash( $_GET['price'] ) );
+			$meta_query[] = array(
+				'key'     => 'books_price',
+				'value'   => $price,
+				'compare' => '=',
+			);
+		}
+
+		if ( isset( $_GET['rating'] ) ) {
+			$rating       = sanitize_text_field( wp_unslash( $_GET['rating'] ) );
+			$meta_query[] = array(
+				'key'     => 'books_rating',
+				'value'   => $rating,
+				'compare' => '=',
+			);
+		}
+
+		$tax_query = array();
+
+		if ( isset( $_GET['author'] ) ) {
+			$terms       = sanitize_text_field( wp_unslash( $_GET['author'] ) );
+			$tax_query[] = array(
+				'taxonomy' => 'book_author',
+				'field'    => 'slug',
+				'terms'    => $terms,
+			);
+		}
+		if ( isset( $_GET['publisher'] ) ) {
+			$terms       = sanitize_text_field( wp_unslash( $_GET['publisher'] ) );
+			$tax_query[] = array(
+				'taxonomy' => 'book_publisher',
+				'field'    => 'slug',
+				'terms'    => $terms,
+			);
+		}
+		$args = array(
+			'post_type'      => 'books',
+			'posts_per_page' => - 1,
+			'meta_query'     => $meta_query,
+			'tax_query'      => $tax_query,
+		);
+
+		if ( isset( $_GET['bookname'] ) ) {
+			$search       = sanitize_text_field( wp_unslash( $_GET['bookname'] ) );
+			$search_query = new WP_Query(
+				array(
+					'post_type'      => 'books',
+					'posts_per_page' => - 1,
+					'meta_query'     => $meta_query,
+					'tax_query'      => $tax_query,
+					's'              => $search,
+				)
+			);
+		} else {
+			$search_query = new WP_Query( $args );
+		}
+
+		if ( $search_query->have_posts() ) {
+			$result = array();
+
+			while ( $search_query->have_posts() ) {
+				$search_query->the_post();
+
+				$post_type      = get_post_type( get_the_ID() );
+				$taxonomies     = get_object_taxonomies( $post_type );
+				$taxonomy_names = wp_get_object_terms(
+					get_the_ID(),
+					$taxonomies,
+					array(
+						'fields' => 'names',
+					)
+				);
+
+				$rating   = current( get_post_meta( get_the_ID(), 'books_rating' ) );
+				$result[] = array(
+					'id'        => get_the_ID(),
+					'title'     => get_the_title(),
+					'content'   => get_the_content(),
+					'permalink' => get_permalink(),
+					'price'     => current( get_post_meta( get_the_ID(), 'books_price' ) ),
+					'rating'    => wp_star_ratings(
+						array(
+							'rating' => $rating,
+							'type'   => 'rating',
+						)
+					),
+					'author'    => $taxonomy_names[0],
+					'publisher' => $taxonomy_names[1],
+				);
+			}
+			wp_reset_postdata();
+			echo wp_json_encode( $result );
+		} else {
+			echo wp_json_encode( array() );
+			// no posts found.
+		}
+	}
+	wp_die();
+}
+
+/**
+ * WP Star Rating.
+ *
+ * @param array $args | STAR RATING.
+ *
+ * @return string|void
+ */
+function wp_star_ratings( array $args = array() ) {
+	$output   = '';
+	$defaults = array(
+		'rating' => 0,
+		'type'   => 'rating',
+		'number' => 0,
+	);
+	$r        = wp_parse_args( $args, $defaults );
+
+	// Non-english decimal places when the $rating is coming from a string.
+	$rating = str_replace( ',', '.', $r['rating'] );
+
+	// Convert Percentage to star rating, 0..5 in .5 increments.
+	if ( 'percent' === $r['type'] ) {
+		$rating = round( $rating / 10, 0 ) / 2;
+	}
+
+	if ( $rating > 0 ) {
+		// Calculate the number of each type of star needed.
+		$full_stars  = floor( $rating );
+		$half_stars  = ceil( $rating - $full_stars );
+		$empty_stars = 5 - $full_stars - $half_stars;
+
+		if ( $r['number'] ) {
+			// translators: 1: The rating, 2: The number of ratings.
+			$title = _n( '%1$s rating based on %2$s rating', '%1$s rating based on %2$s ratings', $r['number'] );
+			$title = sprintf( $title, number_format_i18n( $rating, 1 ), number_format_i18n( $r['number'] ) );
+		} else {
+			// translators: 1: The rating.
+			$title = sprintf( esc_html__( '%s rating' ), number_format_i18n( $rating, 1 ) );
+		}
+
+		$output .= '<div class="star-rating" title="' . esc_attr( $title ) . '">';
+		$output .= str_repeat( '<div class="star star-full"></div>', $full_stars );
+		$output .= str_repeat( '<div class="star star-half"></div>', $half_stars );
+		$output .= str_repeat( '<div class="star star-empty"></div>', $empty_stars );
+		$output .= '</div>';
+
+		if ( $r['echo'] ) {
+			echo wp_kses_data( $output );
+		}
+
+		return $output;
+	}
+}
